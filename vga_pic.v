@@ -11,6 +11,7 @@ module vga_pic(
     localparam BLACK  = 16'h0000;
     localparam WHITE  = 16'hFFFF;
     
+    // 字母尺寸
     localparam LETTER_H = 10'd80;
     localparam LETTER_W = 10'd48;
     localparam GAP      = 10'd12;
@@ -47,28 +48,55 @@ module vga_pic(
     wire [9:0] m_y_rel  = pix_y - Y_START;
     
     // M的关键几何参数
-    localparam M_MID_X   = LETTER_W / 2;     // 宽度中点（24）
-    localparam M_HALF_H  = LETTER_H / 2;     // 高度中点（40）
-    localparam M_SLOPE_DEN = M_MID_X - STROKE;  // 斜线分母（24-10=14）
+    localparam M_MID_X         = LETTER_W / 2;        // 宽度中点（24）
+    localparam M_HALF_H        = LETTER_H / 2;        // 高度中点（40）
+    localparam M_SLOPE_DEN     = M_MID_X - STROKE;    // 斜线分母（14）
+    localparam M_SLOPE_NUM     = M_HALF_H;            // 斜线分子（40）
+    localparam M_RIGHT_X_START = LETTER_W - STROKE;   // 右竖起始X (38)
 
-    // 1. 左竖条（宽度=STROKE，高度全高）
+    // 为了避免浮点数，将所有 y = k*x 变为 y*DEN = NUM*x
+    // 我们还需要考虑线宽，所以要乘以 2*DEN
+
+    // 1. 左竖条
     wire m_left_bar = (m_x_rel < STROKE);
-    // 2. 右竖条（宽度=STROKE，高度全高）
-    wire m_right_bar = (m_x_rel >= (LETTER_W - STROKE));
-    // 3. 左斜线：从左竖顶部(STROKE,0)到中点(M_MID_X, M_HALF_H)，宽度=STROKE
-    wire m_left_diag = (m_x_rel >= STROKE) && (m_x_rel < M_MID_X) &&
-                       (m_y_rel >= ((M_HALF_H * (m_x_rel - STROKE)) / M_SLOPE_DEN) - (STROKE/2)) &&
-                       (m_y_rel <= ((M_HALF_H * (m_x_rel - STROKE)) / M_SLOPE_DEN) + (STROKE/2));
-    // 4. 右斜线：从中点(M_MID_X, M_HALF_H)到右竖顶部(LETTER_W-STROKE, 0)，宽度=STROKE
-    wire m_right_diag = (m_x_rel >= M_MID_X) && (m_x_rel < (LETTER_W - STROKE)) &&
-                        (m_y_rel >= ((-M_HALF_H * (m_x_rel - (LETTER_W - STROKE))) / M_SLOPE_DEN) - (STROKE/2)) &&
-                        (m_y_rel <= ((-M_HALF_H * (m_x_rel - (LETTER_W - STROKE))) / M_SLOPE_DEN) + (STROKE/2));
-
+    // 2. 右竖条
+    wire m_right_bar = (m_x_rel >= M_RIGHT_X_START);
     
-    wire draw_m = in_m_box && (m_left_bar || m_right_bar || m_left_diag || m_right_diag);
+    // 3. 左斜线：正斜率 (k = NUM / DEN)。起点 (STROKE, 0)，终点 (M_MID_X, M_HALF_H)。
+    // 线方程: Y = k * (X - STROKE)
+    // 简化后的范围判断 (Y*DEN*2) 
+    wire [19:0] m_left_y_target_doubled_den = M_SLOPE_NUM * (m_x_rel - STROKE) * 2;
+    wire [19:0] m_y_doubled_den = m_y_rel * M_SLOPE_DEN * 2;
+    wire [19:0] m_stroke_adjustment = STROKE * M_SLOPE_DEN; // 线宽调整项
+    
+    wire m_left_diag_match = 
+        (m_y_doubled_den >= m_left_y_target_doubled_den - m_stroke_adjustment) &&
+        (m_y_doubled_den <= m_left_y_target_doubled_den + m_stroke_adjustment);
+
+    wire m_left_diag = (m_x_rel >= STROKE) && (m_x_rel < M_MID_X) && m_left_diag_match;
+                   
+    // 4. 右斜线：负斜率 (k = -NUM / DEN)。起点 (M_MID_X, M_HALF_H)，终点 (M_RIGHT_X_START, 0)。
+    // 线方程: Y = k * (M_RIGHT_X_START - X)
+    // Y = (NUM / DEN) * (M_RIGHT_X_START - X)
+    
+    wire [9:0] m_x_dist_to_end = M_RIGHT_X_START - m_x_rel; // 确保是正数
+    wire [19:0] m_right_y_target_doubled_den = M_SLOPE_NUM * m_x_dist_to_end * 2;
+    
+    wire m_right_diag_match =
+        (m_y_doubled_den >= m_right_y_target_doubled_den - m_stroke_adjustment) &&
+        (m_y_doubled_den <= m_right_y_target_doubled_den + m_stroke_adjustment);
+        
+    // 范围修正：为了覆盖中点，确保 M_MID_X 被左斜线或右斜线之一覆盖。
+    // 这里将右斜线的起点设为 M_MID_X - 1，确保不遗漏 M_MID_X 这一列
+    wire m_right_diag = (m_x_rel > M_MID_X) && (m_x_rel < M_RIGHT_X_START) && m_right_diag_match;
+
+    // 为了确保 M_MID_X 这一列不缺失，我将 m_left_diag 的范围扩大到 M_MID_X (<= M_MID_X)
+    wire m_left_diag_fixed = (m_x_rel >= STROKE) && (m_x_rel <= M_MID_X) && m_left_diag_match;
+    // 最终 M 绘制，使用修正后的左斜线和右斜线
+    wire draw_m = in_m_box && (m_left_bar || m_right_bar || m_left_diag_fixed || m_right_diag);
 
 
-    // -------------------------- 绘制 U  --------------------------
+    // -------------------------- 绘制 U --------------------------
     wire [9:0] u_x_base = X_START + LETTER_W + GAP;
     wire [9:0] u_x_rel = pix_x - u_x_base;
     wire [9:0] u_y_rel = pix_y - Y_START;
@@ -87,7 +115,7 @@ module vga_pic(
     wire draw_u = in_u_box && (u_rect_shape || in_u_corner);
 
 
-    // -------------------------- 绘制 S  --------------------------
+    // -------------------------- 绘制 S --------------------------
     wire [9:0] s_x_base = X_START + 2*(LETTER_W + GAP);
     wire [9:0] s_x_rel = pix_x - s_x_base;
     wire [9:0] s_y_rel = pix_y - Y_START;
@@ -113,7 +141,7 @@ module vga_pic(
     wire draw_s = in_s_box && (s_rect_shape || in_s_corner);
 
 
-    // -------------------------- 绘制 T  --------------------------
+    // -------------------------- 绘制 T --------------------------
     wire [9:0] t_x_base = X_START + 3*(LETTER_W + GAP);
     wire [9:0] t_x_rel = pix_x - t_x_base;
     wire [9:0] t_y_rel = pix_y - Y_START;
