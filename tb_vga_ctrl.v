@@ -1,53 +1,63 @@
-`timescale 1ns/1ns
-module tb_vga_ctrl();
-reg sys_clk;
-reg sys_rst_n;
-reg [15:0] pix_data;
-wire vga_clk;
-wire locked;
-wire rst_n;
+`timescale 1ns/1ps
 
-wire [9:0] pix_x;
-wire [9:0] pix_y;
-wire hsync;
-wire vsync;
-wire [15:0] vga_rgb;
-initial 
-   begin
-	  sys_clk = 1'b1;
-	  sys_rst_n <= 1'b0;
-	  #20
-	  sys_rst_n <= 1'b1;
-	end
+module vga_ctrl_tb;
 
-always #10 sys_clk = ~sys_clk;
-assign rst_n = (sys_rst_n && locked);
-pll_ip	pll_ip_inst 
-(
-	.areset (~sys_rst_n),
-	.inclk0 (sys_clk),
-	.c0 (vga_clk),
-	.locked (locked)
-);
+    // ----------------------- 信号声明 -----------------------
+    reg vga_clk;
+    reg sys_rst_n;
+    reg [15:0] pix_data; // 模拟输入的像素数据
+    
+    wire [9:0] pix_x;
+    wire [9:0] pix_y;
+    wire hsync;
+    wire vsync;
+    wire [15:0] rgb;
 
-always@(posedge sys_clk or negedge sys_rst_n)
-   if (sys_rst_n == 1'b0)
-	   pix_data <= 16'h0000;
-	else if (pix_x >= 10'd0 && pix_x <= 10'd639
-	         && pix_y >= 0 && pix_y <= 10'd479)
-		   pix_data <= 16'hffff;
-	else
-	      pix_data <= 16'h000;
-vga_ctrl vga_ctrl_inst
-(
-. vga_clk(vga_clk),
-.sys_rst_n(rst_n),
-.pix_data(pix_data),
- 
-.pix_x(pix_x),
-.pix_y(pix_y),
-.hsync(hsync),
-.vsync(vsync),
-.vga_rgb(vga_rgb)
-);
+    // ----------------------- Testbench 参数定义  -----------------------
+    localparam VGA_CLK_PERIOD   = 40;       // 25MHz 时钟周期
+    localparam H_TOTAL_CYCLES   = 10'd800;  // DUT 中 VGA 的水平总周期
+    localparam V_TOTAL_LINES    = 10'd525;  // DUT 中 VGA 的垂直总周期
+    localparam NUM_FRAMES       = 3;        // 运行的帧数
+    localparam TOTAL_CYCLES     = NUM_FRAMES * H_TOTAL_CYCLES * V_TOTAL_LINES;
+
+
+    // ----------------------- 实例化待测模块 (DUT) -----------------------
+    vga_ctrl dut (
+        .vga_clk (vga_clk),
+        .sys_rst_n (sys_rst_n),
+        .pix_data (pix_data),
+
+        .pix_x (pix_x),
+        .pix_y (pix_y),
+        .hsync (hsync),
+        .vsync (vsync),
+        .rgb (rgb)
+    );
+
+    // ----------------------- 时钟生成 (vga_clk: 25MHz, 周期 40ns) -----------------------
+    initial begin
+        vga_clk = 0;
+        forever #(VGA_CLK_PERIOD/2) vga_clk = ~vga_clk;
+    end
+
+    // ----------------------- 激励生成 -----------------------
+    initial begin
+        // 1. 初始化和复位
+        sys_rst_n = 1'b0;
+        pix_data = 16'hFFFF; // 假设输入数据为白色
+        $display("------------------- VGA Ctrl Test Start -------------------");
+        
+        // 等待复位结束
+        #(VGA_CLK_PERIOD * 2) sys_rst_n = 1'b1; // 释放复位
+
+        // 2. 运行几个完整的 VGA 帧周期 
+        $display("Running %0d frames (Total cycles: %0d)", NUM_FRAMES, TOTAL_CYCLES);
+        #(VGA_CLK_PERIOD * TOTAL_CYCLES);
+        
+        // 3. 结束仿真
+        $display("------------------- VGA Ctrl Test Finished -------------------");
+        $stop; 
+    end
+
+
 endmodule
